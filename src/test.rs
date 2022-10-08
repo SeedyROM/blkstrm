@@ -322,11 +322,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_stream_ideas_v2() {
-        let s0 = stream::iter(vec![Ok(0), Ok(1)]);
-        let s1 = stream::iter(vec![Ok(0), Ok(1), Ok(2), Ok(3), Ok(4)]);
-        let s2 = stream::iter(vec![Ok(2), Err(eyre!("Bad block!!!!")), Ok(5)]);
+        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+        struct Block(u64);
 
-        let (provider_tx, provider_rx) = mpsc::unbounded_channel::<i32>();
+        let s0 = stream::iter(vec![Ok(Block(0)), Ok(Block(1))]);
+        let s1 = stream::iter(vec![
+            Ok(Block(0)),
+            Ok(Block(1)),
+            Ok(Block(2)),
+            Ok(Block(3)),
+            Ok(Block(4)),
+        ]);
+        let s2 = stream::iter(vec![
+            Ok(Block(2)),
+            Err(eyre!("Bad block!!!!")),
+            Ok(Block(5)),
+        ]);
+
+        let (provider_tx, provider_rx) = mpsc::unbounded_channel::<Block>();
         let mut provider_system = ProviderSystem::new(provider_tx);
 
         provider_system.add_provider_stream(s0);
@@ -353,18 +366,18 @@ mod tests {
 
         let mut assertion_handle_rx = dispatcher_tx.subscribe();
         let assertion_handle_0 = tokio::spawn(async move {
-            let expected = vec![0, 1, 2, 3, 4, 5];
+            let expected = vec![Block(0), Block(1), Block(2), Block(3), Block(4), Block(5)];
             while let Ok(item) = assertion_handle_rx.try_recv() {
-                println!("Process #1 received item: {}", item);
+                println!("Process #1 received item: {:?}", item);
                 assert!(item <= *expected.iter().last().unwrap());
             }
         });
 
         let mut assertion_handle_rx = dispatcher_tx.subscribe();
         let assertion_handle_1 = tokio::spawn(async move {
-            let expected = vec![0, 1, 2, 3, 4, 5];
+            let expected = vec![Block(0), Block(1), Block(2), Block(3), Block(4), Block(5)];
             while let Ok(item) = assertion_handle_rx.try_recv() {
-                println!("Process #2 received item: {}", item);
+                println!("Process #2 received item: {:?}", item);
                 assert!(item <= *expected.iter().last().unwrap());
             }
         });
