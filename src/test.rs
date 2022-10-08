@@ -241,14 +241,18 @@ mod tests {
             inbound: mpsc::UnboundedReceiver<T>,
             outbound: mpsc::UnboundedSender<T>,
             cache_size_max: usize,
-        ) -> Self {
-            Self {
+        ) -> Result<Self> {
+            if cache_size_max == 0 {
+                return Err(eyre!("Cache size must be greater than 0"));
+            }
+
+            Ok(Self {
                 inbound,
                 outbound,
                 queue: Arc::new(Mutex::new(BTreeSet::new())),
                 cache: Arc::new(Mutex::new(BTreeSet::new())),
                 cache_size_max,
-            }
+            })
         }
 
         pub async fn consume(&mut self) -> Result<()> {
@@ -328,8 +332,9 @@ mod tests {
         let s0 = stream::iter(vec![Ok(Block(0)), Ok(Block(1))]);
         let s1 = stream::iter(vec![
             Ok(Block(0)),
-            Ok(Block(1)),
             Ok(Block(2)),
+            Ok(Block(1)),
+            Ok(Block(0)),
             Ok(Block(3)),
             Ok(Block(4)),
         ]);
@@ -351,7 +356,7 @@ mod tests {
         });
 
         let (sequencer_tx, sequencer_rx) = mpsc::unbounded_channel();
-        let mut sequencer = Sequencer::new(provider_rx, sequencer_tx, 1);
+        let mut sequencer = Sequencer::new(provider_rx, sequencer_tx, 1).unwrap();
 
         let sequencer_handle = tokio::spawn(async move {
             sequencer.consume().await.unwrap();
