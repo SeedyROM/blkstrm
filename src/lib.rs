@@ -299,7 +299,7 @@ mod tests {
 
         // Take in a stream of data from the providers and produce a stream of dedup'd sorted data
         let (sequencer_tx, sequencer_rx) = mpsc::unbounded_channel();
-        let mut sequencer = Sequencer::new(provider_rx, sequencer_tx, 1).unwrap();
+        let mut sequencer = Sequencer::new(provider_rx, sequencer_tx, 4).unwrap();
 
         let sequencer_handle = tokio::spawn(async move {
             sequencer.consume().await.unwrap();
