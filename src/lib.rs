@@ -1,281 +1,286 @@
-mod test;
+use color_eyre::{eyre::eyre, Result};
+use futures::{stream::FuturesUnordered, Stream, StreamExt};
+use std::{collections::BTreeSet, fmt::Debug, pin::Pin, sync::Arc};
+use tokio::sync::{broadcast, mpsc, Mutex};
 
-// use color_eyre::{eyre::eyre, Result};
-// use futures::{Stream, StreamExt};
-// use std::{collections::BTreeSet, fmt::Debug, pin::Pin};
-// use tokio::sync::broadcast;
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProviderState<T> {
+    pub status: bool,
+    pub last_seen: Option<T>,
+}
 
-// pub struct ProviderState<T> {
-//     status: bool,
-//     last_seen: Option<T>,
-// }
+impl<T> Default for ProviderState<T> {
+    fn default() -> Self {
+        Self {
+            status: false,
+            last_seen: None,
+        }
+    }
+}
 
-// pub struct Provider<T, S>
-// where
-//     S: Stream<Item = Result<T>>,
-// {
-//     state: ProviderState<T>,
-//     stream: Pin<Box<S>>,
-// }
+pub struct Provider<T, S>
+where
+    S: Stream<Item = Result<T>> + Send + Sync,
+{
+    pub(crate) state: Arc<Mutex<ProviderState<T>>>,
+    pub(crate) stream: Pin<Box<S>>,
+    pub(crate) outbound: mpsc::UnboundedSender<T>,
+}
 
-// // Implement provider
-// impl<T, S> Provider<T, S>
-// where
-//     T: Debug + Clone + Send,
-//     S: Stream<Item = Result<T>>,
-// {
-//     pub fn new(stream: S) -> Self {
-//         Self {
-//             state: ProviderState {
-//                 status: false,
-//                 last_seen: None,
-//             },
-//             stream: Box::pin(stream),
-//         }
-//     }
+impl<T, S> Provider<T, S>
+where
+    T: Clone + Debug + Send + Sync + 'static,
+    S: Stream<Item = Result<T>> + Send + Sync,
+{
+    pub fn new(outbound: mpsc::UnboundedSender<T>, stream: S) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(ProviderState::default())),
+            stream: Box::pin(stream),
+            outbound,
+        }
+    }
 
-//     pub fn status(&self) -> bool {
-//         self.state.status
-//     }
+    pub async fn run(
+        state: Arc<Mutex<ProviderState<T>>>,
+        stream: &mut Pin<Box<S>>,
+        outbound: &mpsc::UnboundedSender<T>,
+    ) -> Result<()> {
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(item) => {
+                    let mut state = state.lock().await;
+                    state.status = true;
+                    outbound.send(item.clone())?;
+                    state.last_seen = Some(item.clone());
+                }
+                Err(_) => {
+                    let mut state = state.lock().await;
+                    state.status = false;
+                }
+            }
+        }
+        Ok(())
+    }
+}
 
-//     pub fn last_seen(&self) -> Option<&T> {
-//         self.state.last_seen.as_ref()
-//     }
+pub struct ProviderSystem<T, S>
+where
+    S: Stream<Item = Result<T>> + Send + Sync,
+{
+    pub providers: Vec<Provider<T, S>>,
+    pub outbound: mpsc::UnboundedSender<T>,
+}
 
-//     pub async fn run(&mut self, sender: broadcast::Sender<T>) -> Result<()> {
-//         while let Some(item) = self.stream.next().await {
-//             println!("Received item: {:?}", item);
-//             let item = item?;
-//             self.state.status = true;
-//             self.state.last_seen = Some(item.clone());
-//             sender
-//                 .send(item)
-//                 .map_err(|err| eyre!("Failed to send item: {}", err))?;
-//         }
-//         self.state.status = false;
-//         Ok(())
-//     }
-// }
+impl<T, S> ProviderSystem<T, S>
+where
+    T: Clone + Debug + Send + Sync + 'static,
+    S: Stream<Item = Result<T>> + Send + Sync,
+{
+    pub fn new(outbound: mpsc::UnboundedSender<T>) -> Self {
+        Self {
+            providers: Vec::new(),
+            outbound,
+        }
+    }
 
-// pub struct ProviderHandle<T, S>
-// where
-//     T: Clone + Send,
-//     S: Stream<Item = Result<T>>,
-// {
-//     sender: broadcast::Sender<T>,
-//     _marker: std::marker::PhantomData<S>,
-// }
+    pub fn add_provider_stream(&mut self, stream: S) {
+        self.providers
+            .push(Provider::new(self.outbound.clone(), stream));
+    }
 
-// impl<T, S> ProviderHandle<T, S>
-// where
-//     T: Debug + Clone + Send + 'static,
-//     S: Stream<Item = Result<T>> + Send + 'static,
-// {
-//     pub fn new(sender: broadcast::Sender<T>, stream: S) -> Self {
-//         let mut actor = Provider::<T, S>::new(stream);
-//         let actor_sender = sender.clone();
-//         tokio::spawn(async move { actor.run(actor_sender).await });
-//         Self {
-//             sender,
-//             _marker: std::marker::PhantomData,
-//         }
-//     }
-// }
+    pub async fn produce(&mut self) -> Result<()> {
+        let mut provider_futures = FuturesUnordered::new();
 
-// pub struct Producer<T> {
-//     sender: broadcast::Sender<T>,
-//     queue: BTreeSet<T>,
-//     cache: BTreeSet<T>,
-// }
+        for provider in self.providers.iter_mut() {
+            provider_futures.push(Provider::run(
+                provider.state.clone(),
+                &mut provider.stream,
+                &provider.outbound,
+            ));
+        }
 
-// impl<T> Producer<T>
-// where
-//     T: Debug + Clone + Ord + Send,
-// {
-//     pub fn new(sender: broadcast::Sender<T>) -> Self {
-//         Self {
-//             sender,
-//             queue: BTreeSet::new(),
-//             cache: BTreeSet::new(),
-//         }
-//     }
+        while let Some(_) = provider_futures.next().await {}
 
-//     pub async fn run(&mut self, mut receiver: broadcast::Receiver<T>) -> Result<()> {
-//         while let Ok(item) = receiver.recv().await {
-//             println!("Received item: {:?}", item);
-//             self.queue.insert(item.clone());
-//             self.cache.insert(item.clone());
-//         }
+        Ok(())
+    }
+}
 
-//         Ok(())
-//     }
-// }
+pub struct Sequencer<T> {
+    pub inbound: mpsc::UnboundedReceiver<T>,
+    pub outbound: mpsc::UnboundedSender<T>,
+    pub queue: Arc<Mutex<BTreeSet<T>>>,
+    pub cache: Arc<Mutex<BTreeSet<T>>>,
+    pub cache_size_max: usize,
+}
 
-// pub struct ProducerHandle<T> {
-//     _marker: std::marker::PhantomData<T>,
-// }
+impl<T> Sequencer<T>
+where
+    T: Clone + Debug + Ord,
+{
+    pub fn new(
+        inbound: mpsc::UnboundedReceiver<T>,
+        outbound: mpsc::UnboundedSender<T>,
+        cache_size_max: usize,
+    ) -> Result<Self> {
+        if cache_size_max == 0 {
+            return Err(eyre!("Cache size must be greater than 0"));
+        }
 
-// impl<T> ProducerHandle<T>
-// where
-//     T: Debug + Clone + Ord + Send + 'static,
-// {
-//     pub fn new(sender: broadcast::Sender<T>, receiver: broadcast::Receiver<T>) -> Self {
-//         let mut actor = Producer::<T>::new(sender);
-//         tokio::spawn(async move { actor.run(receiver).await });
-//         Self {
-//             _marker: std::marker::PhantomData,
-//         }
-//     }
-// }
+        Ok(Self {
+            inbound,
+            outbound,
+            queue: Arc::new(Mutex::new(BTreeSet::new())),
+            cache: Arc::new(Mutex::new(BTreeSet::new())),
+            cache_size_max,
+        })
+    }
 
-// use std::{
-//     collections::BTreeSet,
-//     fmt::Debug,
-//     pin::Pin,
-//     task::{Context, Poll},
-// };
+    pub async fn consume(&mut self) -> Result<()> {
+        let mut last_seen = None;
+        while let Some(item) = self.inbound.recv().await {
+            let mut queue = self.queue.lock().await;
+            let mut cache = self.cache.lock().await;
 
-// use async_stream::try_stream;
-// use color_eyre::{eyre::eyre, Result};
-// use futures::{Stream, StreamExt};
-// use tokio::{
-//     sync::broadcast,
-//     task::{self, JoinHandle},
-// };
+            // Ignore if in cache
+            if cache.contains(&item) {
+                continue;
+            }
 
-// pub struct ProviderState<T> {
-//     status: bool,
-//     last_seen: Option<T>,
-// }
+            // If we've seen other values, ignore if below the last seen value
+            if let Some(last_seen) = last_seen.clone() {
+                if item < last_seen {
+                    continue;
+                }
+            }
 
-// pub struct Provider<T, S> {
-//     state: ProviderState<T>,
-//     stream: Pin<Box<S>>,
-// }
+            // Insert into queue
+            queue.insert(item);
 
-// // Implement provider
-// impl<T, S> Provider<T, S>
-// where
-//     T: Debug + Clone + Send,
-//     S: futures::Stream<Item = Result<T>>,
-// {
-//     pub fn new(stream: S) -> Self {
-//         Self {
-//             state: ProviderState {
-//                 status: false,
-//                 last_seen: None,
-//             },
-//             stream: Box::pin(stream),
-//         }
-//     }
+            // Get the last value from the set
+            let last_value = queue.iter().next().unwrap().clone();
 
-//     pub fn status(&self) -> bool {
-//         self.state.status
-//     }
+            // Send it out
+            self.outbound
+                .send(last_value.clone())
+                .map_err(|err| eyre!("Failed to send item: {}", err))?;
 
-//     pub fn last_seen(&self) -> Option<&T> {
-//         self.state.last_seen.as_ref()
-//     }
+            // Remove it from the set
+            queue.remove(&last_value);
 
-//     pub async fn run(&mut self, sender: broadcast::Sender<T>) -> Result<()> {
-//         while let Some(item) = self.stream.next().await {
-//             println!("Received item: {:?}", item);
-//             let item = item?;
-//             self.state.status = true;
-//             self.state.last_seen = Some(item.clone());
-//             sender
-//                 .send(item)
-//                 .map_err(|err| eyre!("Failed to send item: {}", err))?;
-//         }
-//         self.state.status = false;
-//         Ok(())
-//     }
-// }
+            // If the cache is full, remove the oldest item
+            if &cache.len() >= &self.cache_size_max {
+                let x = cache.iter().next().unwrap().clone();
+                cache.remove(&x);
+            }
 
-// pub struct Producer<T, S> {
-//     providers: Vec<Provider<T, S>>,
-//     queue: BTreeSet<T>,
-//     cache: BTreeSet<T>,
-// }
+            // Update the cache
+            cache.insert(last_value.clone());
 
-// impl<T, S> Producer<T, S>
-// where
-//     T: Debug + Clone + Ord + Send,
-//     S: futures::Stream<Item = Result<T>> + Send,
-//     Provider<T, S>: Send + 'static,
-// {
-//     pub fn new() -> Self {
-//         Self {
-//             providers: Vec::new(),
-//             queue: BTreeSet::new(),
-//             cache: BTreeSet::new(),
-//         }
-//     }
+            // Update the last seen value
+            last_seen = Some(last_value);
+        }
+        Ok(())
+    }
+}
 
-//     pub fn add_provider(&mut self, provider: Provider<T, S>) {
-//         self.providers.push(provider);
-//     }
+pub struct Dispatcher<T> {
+    pub inbound: mpsc::UnboundedReceiver<T>,
+    pub outbound: broadcast::Sender<T>,
+}
 
-//     pub fn run(&mut self) -> impl Stream<Item = Result<()>> {
-//         try_stream! {
-//             let mut receivers = Vec::new();
-//             for provider in self.providers.iter_mut() {
-//                 let (sender, receiver) = broadcast::channel(1);
-//                 receivers.push(receiver);
-//                 task::spawn(async move { provider.run(sender).await });
-//             }
+impl<T> Dispatcher<T>
+where
+    T: Clone + Debug + Send + Sync + 'static,
+{
+    pub fn new(inbound: mpsc::UnboundedReceiver<T>, outbound: broadcast::Sender<T>) -> Self {
+        Self { inbound, outbound }
+    }
 
-//             loop {
-//                 for receiver in receivers.iter_mut() {
-//                     while let Ok(item) = receiver.recv().await {
-//                         println!("Received item: {:?}", item);
-//                         self.queue.insert(item.clone());
-//                         self.cache.insert(item.clone());
-//                     }
-//                 }
-//                 yield ();
-//             }
-//         }
-//     }
-// }
+    pub async fn fanout(&mut self) -> Result<()> {
+        while let Some(item) = self.inbound.recv().await {
+            self.outbound.send(item.clone())?;
+        }
+        Ok(())
+    }
+}
 
-// // #[cfg(test)]
-// // mod tests {
-// //     use futures::stream;
+#[cfg(test)]
+mod tests {
+    use color_eyre::eyre::eyre;
+    use futures::stream;
 
-// //     use super::*;
+    use super::*;
 
-// //     #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-// //     struct Block(u64);
+    #[tokio::test]
+    async fn system_architecture() {
+        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+        struct Block(u64);
 
-// //     #[tokio::test]
-// //     async fn it_works() {
-// //         // Example providers
-// //         let p0 = Provider::new(stream::iter(vec![Ok(Block(0)), Ok(Block(1))]));
-// //         let p1 = Provider::new(stream::iter(vec![
-// //             Ok(Block(0)),
-// //             Ok(Block(1)),
-// //             Ok(Block(2)),
-// //             Ok(Block(3)),
-// //             Ok(Block(4)),
-// //         ]));
-// //         let p2 = Provider::new(stream::iter(vec![
-// //             Ok(Block(2)),
-// //             Err(eyre!("Bad block!!!!")),
-// //             Ok(Block(5)),
-// //         ]));
+        let s0 = stream::iter(vec![Ok(Block(0)), Ok(Block(1))]);
+        let s1 = stream::iter(vec![
+            Ok(Block(0)),
+            Ok(Block(2)),
+            Ok(Block(1)),
+            Ok(Block(0)),
+            Ok(Block(4)),
+            Ok(Block(3)),
+            Err(eyre!("Bad block!!!!")),
+        ]);
+        let s2 = stream::iter(vec![
+            Ok(Block(2)),
+            Err(eyre!("Bad block!!!!")),
+            Ok(Block(5)),
+        ]);
 
-// //         // The main producer
-// //         let producer = Producer::new();
-// //         producer.add_provider(p0);
-// //         producer.add_provider(p1);
-// //         producer.add_provider(p2);
+        let (provider_tx, provider_rx) = mpsc::unbounded_channel::<Block>();
+        let mut provider_system = ProviderSystem::new(provider_tx);
 
-// //         let stream = producer.stream();
+        provider_system.add_provider_stream(s0);
+        provider_system.add_provider_stream(s1);
+        provider_system.add_provider_stream(s2);
 
-// //         Assert we recv blocks in sequence and no duplicates
-// //         // for i in 0..5 {
-// //         //     assert_eq!(stream.next().await, Some(Ok(Block(i))));
-// //         // }
-// //     }
-// // }
+        let provider_system_handle = tokio::spawn(async move {
+            provider_system.produce().await.unwrap();
+        });
+
+        let (sequencer_tx, sequencer_rx) = mpsc::unbounded_channel();
+        let mut sequencer = Sequencer::new(provider_rx, sequencer_tx, 1).unwrap();
+
+        let sequencer_handle = tokio::spawn(async move {
+            sequencer.consume().await.unwrap();
+        });
+
+        let (dispatcher_tx, _dispatcher_rx) = broadcast::channel(10);
+        let mut dispatcher = Dispatcher::new(sequencer_rx, dispatcher_tx.clone());
+
+        let dispatcher_handle = tokio::spawn(async move {
+            dispatcher.fanout().await.unwrap();
+        });
+
+        let mut assertion_handle_rx = dispatcher_tx.subscribe();
+        let assertion_handle_0 = tokio::spawn(async move {
+            let expected = vec![Block(0), Block(1), Block(2), Block(3), Block(4), Block(5)];
+            while let Ok(item) = assertion_handle_rx.try_recv() {
+                println!("Process #1 received item: {:?}", item);
+                assert!(item <= *expected.iter().last().unwrap());
+            }
+        });
+
+        let mut assertion_handle_rx = dispatcher_tx.subscribe();
+        let assertion_handle_1 = tokio::spawn(async move {
+            let expected = vec![Block(0), Block(1), Block(2), Block(3), Block(4), Block(5)];
+            while let Ok(item) = assertion_handle_rx.try_recv() {
+                println!("Process #2 received item: {:?}", item);
+                assert!(item <= *expected.iter().last().unwrap());
+            }
+        });
+
+        let _ = tokio::try_join!(
+            provider_system_handle,
+            sequencer_handle,
+            dispatcher_handle,
+            assertion_handle_0,
+            assertion_handle_1
+        );
+    }
+}
