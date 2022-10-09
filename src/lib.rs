@@ -1,20 +1,44 @@
 use color_eyre::{eyre::eyre, Result};
 use futures::{stream::FuturesUnordered, Stream, StreamExt};
-use std::{collections::BTreeSet, fmt::Debug, pin::Pin, sync::Arc};
+use std::{collections::BTreeSet, fmt::Debug, pin::Pin, sync::Arc, time::SystemTime};
 use tokio::sync::{broadcast, mpsc, Mutex};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastSeen<T> {
+    pub value: T,
+    pub timestamp: u128,
+}
+
+impl<T> LastSeen<T> {
+    pub fn new(value: T) -> Self {
+        Self {
+            value,
+            timestamp: SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderStatus {
+    Running,
+    Stopped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderState<T> {
     pub name: String,
-    pub status: bool,
-    pub last_seen: Option<T>,
+    pub status: ProviderStatus,
+    pub last_seen: Option<LastSeen<T>>,
 }
 
 impl<T> ProviderState<T> {
     fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            status: false,
+            status: ProviderStatus::Stopped,
             last_seen: None,
         }
     }
@@ -51,13 +75,13 @@ where
             match item {
                 Ok(item) => {
                     let mut state = state.lock().await;
-                    state.status = true;
+                    state.status = ProviderStatus::Running;
                     outbound.send(item.clone())?;
-                    state.last_seen = Some(item.clone());
+                    state.last_seen = Some(LastSeen::new(item));
                 }
                 Err(_) => {
                     let mut state = state.lock().await;
-                    state.status = false;
+                    state.status = ProviderStatus::Stopped;
                 }
             }
         }
@@ -346,11 +370,19 @@ mod tests {
         .unwrap();
 
         // Check that all providers are in the expected state
-        let expected_states = vec![(true, Block(1)), (false, Block(3)), (true, Block(5))];
+        let expected_states = vec![
+            (ProviderStatus::Running, Block(1)),
+            (ProviderStatus::Stopped, Block(3)),
+            (ProviderStatus::Running, Block(5)),
+        ];
         for (i, provider_state) in provider_states.iter().enumerate() {
             let provider_state = provider_state.lock().await;
+            println!("Provider_state: {:#?}", provider_state);
             assert_eq!(provider_state.status, expected_states[i].0);
-            assert_eq!(provider_state.last_seen, Some(expected_states[i].1));
+            assert_eq!(
+                provider_state.last_seen.as_ref().unwrap().value,
+                expected_states[i].1
+            );
         }
     }
 }
