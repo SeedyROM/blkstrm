@@ -310,15 +310,13 @@ mod tests {
         ]);
 
         let (provider_tx, provider_rx) = mpsc::unbounded_channel::<Block>();
+        // Create a provider for each stream
         let mut provider_system = ProviderSystem::new(provider_tx);
-
         provider_system.add_provider_stream("stream_1", s0);
         provider_system.add_provider_stream("stream_2", s1);
         provider_system.add_provider_stream("stream_3", s2);
-
         // Get information about each provider
         let provider_states = provider_system.get_provider_states();
-
         // Produce data from each provider into the sequencer
         let provider_system_handle = tokio::spawn(async move {
             provider_system.produce().await.unwrap();
@@ -327,7 +325,6 @@ mod tests {
         // Take in a stream of data from the providers and produce a stream of dedup'd sorted data
         let (sequencer_tx, sequencer_rx) = mpsc::unbounded_channel();
         let mut sequencer = Sequencer::new(provider_rx, sequencer_tx, 4).unwrap();
-
         let sequencer_handle = tokio::spawn(async move {
             sequencer.consume().await.unwrap();
         });
@@ -335,7 +332,6 @@ mod tests {
         // Take in a stream of data and fan it out to all subscribers
         let (dispatcher_tx, _dispatcher_rx) = broadcast::channel(10);
         let mut dispatcher = Dispatcher::new(sequencer_rx, dispatcher_tx.clone());
-
         let dispatcher_handle = tokio::spawn(async move {
             dispatcher.fanout().await.unwrap();
         });
