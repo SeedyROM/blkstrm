@@ -239,9 +239,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use async_stream::try_stream;
     use color_eyre::eyre::eyre;
     use futures::stream;
 
@@ -337,38 +334,31 @@ mod tests {
         });
 
         // Assert these two subscribers receive a dedup'd sequence of blocks.
+        // Don't join on them because they'll never finish.
         let mut assertion_handle_rx = dispatcher_tx.subscribe();
-        let assertion_handle_0 = tokio::spawn(async move {
+        let _ = tokio::spawn(async move {
             let mut received = vec![];
             while let Ok(item) = assertion_handle_rx.recv().await {
-                println!("Subscriber #1 received item: {:?}", item);
+                // println!("Subscriber #1 received item: {:?}", item);
                 received.push(item);
             }
             assert!(is_sorted(&received));
             assert!(no_sequential_duplicates(&received));
         });
         let mut assertion_handle_rx = dispatcher_tx.subscribe();
-        let assertion_handle_1 = tokio::spawn(async move {
+        let _ = tokio::spawn(async move {
             let mut received = vec![];
             while let Ok(item) = assertion_handle_rx.recv().await {
-                println!("Subscriber #2 received item: {:?}", item);
+                // println!("Subscriber #2 received item: {:?}", item);
                 received.push(item);
             }
             assert!(is_sorted(&received));
             assert!(no_sequential_duplicates(&received));
         });
-
-        drop(dispatcher_tx);
 
         // Join em up.
-        let _ = tokio::try_join!(
-            provider_system_handle,
-            sequencer_handle,
-            dispatcher_handle,
-            assertion_handle_0,
-            assertion_handle_1
-        )
-        .unwrap();
+        let _ =
+            tokio::try_join!(provider_system_handle, sequencer_handle, dispatcher_handle).unwrap();
 
         // Check that all providers are in the expected state
         let expected_states = vec![
