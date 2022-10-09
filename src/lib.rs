@@ -239,6 +239,9 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use async_stream::try_stream;
     use color_eyre::eyre::eyre;
     use futures::stream;
 
@@ -285,11 +288,11 @@ mod tests {
         }
     }
 
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+    struct Block(u64);
+
     #[tokio::test]
     async fn system_architecture() {
-        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-        struct Block(u64);
-
         let s0 = stream::iter(vec![Ok(Block(0)), Ok(Block(1))]);
         let s1 = stream::iter(vec![
             Ok(Block(0)),
@@ -341,8 +344,8 @@ mod tests {
         let mut assertion_handle_rx = dispatcher_tx.subscribe();
         let assertion_handle_0 = tokio::spawn(async move {
             let mut received = vec![];
-            while let Ok(item) = assertion_handle_rx.try_recv() {
-                // println!("Subscriber #1 received item: {:?}", item);
+            while let Ok(item) = assertion_handle_rx.recv().await {
+                println!("Subscriber #1 received item: {:?}", item);
                 received.push(item);
             }
             assert!(is_sorted(&received));
@@ -351,13 +354,15 @@ mod tests {
         let mut assertion_handle_rx = dispatcher_tx.subscribe();
         let assertion_handle_1 = tokio::spawn(async move {
             let mut received = vec![];
-            while let Ok(item) = assertion_handle_rx.try_recv() {
-                // println!("Subscriber #2 received item: {:?}", item);
+            while let Ok(item) = assertion_handle_rx.recv().await {
+                println!("Subscriber #2 received item: {:?}", item);
                 received.push(item);
             }
             assert!(is_sorted(&received));
             assert!(no_sequential_duplicates(&received));
         });
+
+        drop(dispatcher_tx);
 
         // Join em up.
         let _ = tokio::try_join!(
@@ -377,7 +382,7 @@ mod tests {
         ];
         for (i, provider_state) in provider_states.iter().enumerate() {
             let provider_state = provider_state.lock().await;
-            println!("Provider_state: {:#?}", provider_state);
+            // println!("Provider_state: {:#?}", provider_state);
             assert_eq!(provider_state.status, expected_states[i].0);
             assert_eq!(
                 provider_state.last_seen.as_ref().unwrap().value,
