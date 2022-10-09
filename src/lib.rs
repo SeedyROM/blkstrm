@@ -148,7 +148,7 @@ pub struct Sequencer<T> {
 
 impl<T> Sequencer<T>
 where
-    T: Clone + Debug + Ord,
+    T: Clone + Debug + Ord + PartialOrd,
 {
     pub fn new(
         inbound: mpsc::UnboundedReceiver<T>,
