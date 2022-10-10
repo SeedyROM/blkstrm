@@ -4,12 +4,18 @@ use std::{collections::BTreeSet, fmt::Debug, pin::Pin, sync::Arc, time::SystemTi
 use tokio::sync::{broadcast, mpsc, Mutex};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LastSeen<T> {
+pub struct LastSeen<T>
+where
+    T: PartialOrd + Ord,
+{
     pub value: T,
     pub timestamp: u128,
 }
 
-impl<T> LastSeen<T> {
+impl<T> LastSeen<T>
+where
+    T: PartialOrd + Ord,
+{
     pub fn new(value: T) -> Self {
         Self {
             value,
@@ -28,13 +34,19 @@ pub enum ProviderStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProviderState<T> {
+pub struct ProviderState<T>
+where
+    T: PartialOrd + Ord,
+{
     pub name: String,
     pub status: ProviderStatus,
     pub last_seen: Option<LastSeen<T>>,
 }
 
-impl<T> ProviderState<T> {
+impl<T> ProviderState<T>
+where
+    T: PartialOrd + Ord,
+{
     fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -46,6 +58,7 @@ impl<T> ProviderState<T> {
 
 pub struct Provider<T, S>
 where
+    T: Ord,
     S: Stream<Item = Result<T>> + Send + Sync,
 {
     pub(crate) state: Arc<Mutex<ProviderState<T>>>,
@@ -55,7 +68,7 @@ where
 
 impl<T, S> Provider<T, S>
 where
-    T: Clone + Debug + Send + Sync + 'static,
+    T: Ord + Clone + Debug + Send + Sync + 'static,
     S: Stream<Item = Result<T>> + Send + Sync,
 {
     pub fn new(name: String, outbound: mpsc::UnboundedSender<T>, stream: S) -> Self {
@@ -79,9 +92,10 @@ where
                     outbound.send(item.clone())?;
                     state.last_seen = Some(LastSeen::new(item));
                 }
-                Err(_) => {
+                Err(err) => {
                     let mut state = state.lock().await;
                     state.status = ProviderStatus::Stopped;
+                    Err(err)?
                 }
             }
         }
@@ -91,6 +105,7 @@ where
 
 pub struct ProviderSystem<T, S>
 where
+    T: Ord,
     S: Stream<Item = Result<T>> + Send + Sync,
 {
     pub providers: Vec<Provider<T, S>>,
@@ -99,7 +114,7 @@ where
 
 impl<T, S> ProviderSystem<T, S>
 where
-    T: Clone + Debug + Send + Sync + 'static,
+    T: Ord + Clone + Debug + Send + Sync + 'static,
     S: Stream<Item = Result<T>> + Send + Sync,
 {
     pub fn new(outbound: mpsc::UnboundedSender<T>) -> Self {
@@ -213,6 +228,82 @@ where
             last_seen = Some(last_value);
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ProviderSystemMonitorMessage {
+    AllProvidersStopped,
+    ProblemProviders {
+        lagging: Vec<String>,
+        stopped: Vec<String>,
+    },
+    ProvidersOk,
+}
+
+pub struct ProviderSystemMonitor<T>
+where
+    T: std::fmt::Debug + Ord,
+{
+    pub provider_states: Vec<Arc<Mutex<ProviderState<T>>>>,
+    pub outbound: mpsc::Sender<ProviderSystemMonitorMessage>,
+}
+
+impl<T> ProviderSystemMonitor<T>
+where
+    T: std::fmt::Debug + PartialOrd + Ord,
+{
+    pub fn new(
+        provider_states: Vec<Arc<Mutex<ProviderState<T>>>>,
+        outbound: mpsc::Sender<ProviderSystemMonitorMessage>,
+    ) -> Self {
+        Self {
+            provider_states,
+            outbound,
+        }
+    }
+
+    pub async fn monitor(self, interval_millis: u64) -> Result<()> {
+        loop {
+            let mut current_provider_states = vec![];
+            for state in self.provider_states.iter() {
+                let state = state.lock().await;
+                current_provider_states.push(state);
+            }
+
+            let max_last_seen_value = current_provider_states
+                .iter()
+                .filter(|state| state.last_seen.is_some())
+                .map(|state| &state.last_seen.as_ref().unwrap().value)
+                .max();
+
+            let lagging = current_provider_states
+                .iter()
+                .filter(|state| {
+                    state.last_seen.is_some()
+                        && &state.last_seen.as_ref().unwrap().value < max_last_seen_value.unwrap()
+                })
+                .map(|state| state.name.clone())
+                .collect::<Vec<_>>();
+
+            let stopped = current_provider_states
+                .iter()
+                .filter(|state| state.status == ProviderStatus::Stopped)
+                .map(|state| state.name.clone())
+                .collect::<Vec<_>>();
+
+            let msg = if stopped.len() == current_provider_states.len() {
+                ProviderSystemMonitorMessage::AllProvidersStopped
+            } else if !lagging.is_empty() || !stopped.is_empty() {
+                ProviderSystemMonitorMessage::ProblemProviders { lagging, stopped }
+            } else {
+                ProviderSystemMonitorMessage::ProvidersOk
+            };
+
+            self.outbound.send(msg).await?;
+
+            tokio::time::sleep(std::time::Duration::from_millis(interval_millis)).await;
+        }
     }
 }
 
