@@ -1,14 +1,11 @@
-use std::sync::Arc;
-
 use async_stream::try_stream;
 use blkstrm::{
-    Dispatcher, LastSeen, ProviderState, ProviderStatus, ProviderSystem, ProviderSystemMonitor,
-    ProviderSystemMonitorState, Sequencer,
+    Dispatcher, ProviderSystem, ProviderSystemMonitor, ProviderSystemMonitorState, Sequencer,
 };
 use color_eyre::{eyre::eyre, Result};
 use futures::Stream;
 use rand::distributions::{Distribution, Uniform};
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{broadcast, mpsc};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 struct Block(u64);
@@ -70,7 +67,6 @@ async fn main() -> Result<()> {
     let monitor_handle = tokio::spawn(async move {
         monitor.monitor(2000).await.unwrap();
     });
-
     let monitor_watch_handle = tokio::spawn(async move {
         while let Some(msg) = monitor_rx.recv().await {
             match msg {
