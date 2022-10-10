@@ -232,7 +232,7 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub enum ProviderSystemMonitorMessage {
+pub enum ProviderSystemMonitorState {
     AllProvidersStopped,
     ProblemProviders {
         lagging: Vec<String>,
@@ -246,7 +246,8 @@ where
     T: std::fmt::Debug + Ord,
 {
     pub provider_states: Vec<Arc<Mutex<ProviderState<T>>>>,
-    pub outbound: mpsc::Sender<ProviderSystemMonitorMessage>,
+    pub outbound: mpsc::Sender<ProviderSystemMonitorState>,
+    pub state: Arc<Mutex<ProviderSystemMonitorState>>,
 }
 
 impl<T> ProviderSystemMonitor<T>
@@ -255,11 +256,12 @@ where
 {
     pub fn new(
         provider_states: Vec<Arc<Mutex<ProviderState<T>>>>,
-        outbound: mpsc::Sender<ProviderSystemMonitorMessage>,
+        outbound: mpsc::Sender<ProviderSystemMonitorState>,
     ) -> Self {
         Self {
             provider_states,
             outbound,
+            state: Arc::new(Mutex::new(ProviderSystemMonitorState::AllProvidersStopped)),
         }
     }
 
@@ -293,13 +295,14 @@ where
                 .collect::<Vec<_>>();
 
             let msg = if stopped.len() == current_provider_states.len() {
-                ProviderSystemMonitorMessage::AllProvidersStopped
+                ProviderSystemMonitorState::AllProvidersStopped
             } else if !lagging.is_empty() || !stopped.is_empty() {
-                ProviderSystemMonitorMessage::ProblemProviders { lagging, stopped }
+                ProviderSystemMonitorState::ProblemProviders { lagging, stopped }
             } else {
-                ProviderSystemMonitorMessage::ProvidersOk
+                ProviderSystemMonitorState::ProvidersOk
             };
 
+            self.state.lock().await.clone_from(&msg);
             self.outbound.send(msg).await?;
 
             tokio::time::sleep(std::time::Duration::from_millis(interval_millis)).await;

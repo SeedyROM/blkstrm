@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_stream::try_stream;
 use blkstrm::{
     Dispatcher, LastSeen, ProviderState, ProviderStatus, ProviderSystem, ProviderSystemMonitor,
-    ProviderSystemMonitorMessage, Sequencer,
+    ProviderSystemMonitorState, Sequencer,
 };
 use color_eyre::{eyre::eyre, Result};
 use futures::Stream;
@@ -74,16 +74,16 @@ async fn main() -> Result<()> {
     let monitor_watch_handle = tokio::spawn(async move {
         while let Some(msg) = monitor_rx.recv().await {
             match msg {
-                ProviderSystemMonitorMessage::AllProvidersStopped => {
+                ProviderSystemMonitorState::AllProvidersStopped => {
                     println!("All providers stopped");
                 }
-                ProviderSystemMonitorMessage::ProblemProviders { lagging, stopped } => {
+                ProviderSystemMonitorState::ProblemProviders { lagging, stopped } => {
                     println!(
                         "Problem providers: lagging: {:#?}, stopped: {:#?}",
                         lagging, stopped
                     );
                 }
-                ProviderSystemMonitorMessage::ProvidersOk => {
+                ProviderSystemMonitorState::ProvidersOk => {
                     println!("All providers ok");
                 }
             }
