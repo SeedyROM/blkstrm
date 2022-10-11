@@ -394,11 +394,7 @@ mod tests {
             Ok(Block(3)),
             Err(eyre!("Bad block!!!!")),
         ]);
-        let s2 = stream::iter(vec![
-            Ok(Block(2)),
-            Err(eyre!("Bad block!!!!")),
-            Ok(Block(5)),
-        ]);
+        let s2 = stream::iter(vec![Ok(Block(2)), Ok(Block(5))]);
 
         let (provider_tx, provider_rx) = mpsc::unbounded_channel::<Block>();
         // Create a provider for each stream
@@ -433,7 +429,7 @@ mod tests {
         let h0 = tokio::spawn(async move {
             let mut received = vec![];
             while let Ok(item) = assertion_handle_rx.recv().await {
-                // println!("Subscriber #1 received item: {:?}", item);
+                println!("Subscriber #1 received item: {:?}", item);
                 received.push(item);
             }
             assert!(is_sorted(&received));
@@ -443,7 +439,7 @@ mod tests {
         let h1 = tokio::spawn(async move {
             let mut received = vec![];
             while let Ok(item) = assertion_handle_rx.recv().await {
-                // println!("Subscriber #2 received item: {:?}", item);
+                println!("Subscriber #2 received item: {:?}", item);
                 received.push(item);
             }
             assert!(is_sorted(&received));
@@ -468,7 +464,7 @@ mod tests {
         ];
         for (i, provider_state) in provider_states.iter().enumerate() {
             let provider_state = provider_state.lock().await;
-            // println!("Provider_state: {:#?}", provider_state);
+            println!("Provider_state: {:#?}", provider_state);
             assert_eq!(provider_state.status, expected_states[i].0);
             assert_eq!(
                 provider_state.last_seen.as_ref().unwrap().value,

@@ -1,3 +1,5 @@
+#![cfg(not(tarpaulin_include))]
+
 use async_stream::try_stream;
 use blkstrm::{
     Dispatcher, ProviderSystem, ProviderSystemMonitor, ProviderSystemMonitorState, Sequencer,
