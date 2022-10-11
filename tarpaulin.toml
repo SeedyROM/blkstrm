@@ -1,0 +1,5 @@
+[config]
+target-dir = "target/tarpaulin-output"
+skip-clean = true
+# force-clean = false
+ignore-tests = true

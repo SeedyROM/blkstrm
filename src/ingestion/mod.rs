@@ -19,8 +19,9 @@ mod tests {
     #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
     struct Block(u64);
 
-    // #[tokio::test]
-    async fn _system_architecture() {
+    #[tokio::test]
+    #[cfg_attr(tarpaulin, ignore)]
+    async fn system_architecture() {
         let s0 = stream::iter(vec![Ok(Block(0)), Ok(Block(1))]);
         let s1 = stream::iter(vec![
             Ok(Block(0)),

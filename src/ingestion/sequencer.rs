@@ -149,4 +149,66 @@ mod tests {
         is_sorted(&expected);
         no_sequential_duplicates(&expected);
     }
+
+    #[tokio::test]
+    async fn cache_eviction() {
+        // Create channels for inbound and outbound
+        let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
+        let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
+
+        // Create a sequencer
+        let mut sequencer = Sequencer::new(inbound_rx, outbound_tx.clone(), 10).unwrap();
+
+        // Spawn a task to consume
+        let sequencer_handle = tokio::spawn(async move {
+            sequencer.consume().await.unwrap();
+        });
+
+        // Send the same value twice
+        inbound_tx.send(1).unwrap();
+        inbound_tx.send(1).unwrap();
+
+        // Drop the senders to signal the end of the stream
+        drop(inbound_tx);
+        drop(outbound_tx);
+
+        // Wait for the sequencer to finish
+        let _ = try_join!(sequencer_handle).unwrap();
+
+        // Assert we only get one value
+        assert_eq!(outbound_rx.try_recv().unwrap(), 1);
+        assert!(outbound_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn ignore_previously_seen_sequential_value() {
+        // Create channels for inbound and outbound
+        let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
+        let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
+
+        // Create a sequencer
+        let mut sequencer = Sequencer::new(inbound_rx, outbound_tx.clone(), 10).unwrap();
+
+        // Spawn a task to consume
+        let sequencer_handle = tokio::spawn(async move {
+            sequencer.consume().await.unwrap();
+        });
+
+        // Send the same value twice
+        inbound_tx.send(1).unwrap();
+        inbound_tx.send(2).unwrap();
+        inbound_tx.send(1).unwrap();
+
+        // Drop the senders to signal the end of the stream
+        drop(inbound_tx);
+        drop(outbound_tx);
+
+        // Wait for the sequencer to finish
+        let _ = try_join!(sequencer_handle).unwrap();
+
+        // Assert we only get one value
+        assert_eq!(outbound_rx.try_recv().unwrap(), 1);
+        assert_eq!(outbound_rx.try_recv().unwrap(), 2);
+        assert!(outbound_rx.try_recv().is_err());
+    }
 }
